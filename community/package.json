@@ -1,0 +1,13 @@
+{
+  "name": "walking-pad-community",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Walking Pad Community API: Cloudflare Worker + D1 (daily aggregates, groups, leaderboards).",
+  "scripts": {
+    "dev": "npx wrangler dev --local --port 8787",
+    "migrate:local": "npx wrangler d1 migrations apply DB --local",
+    "test": "node --test --test-concurrency=1 test/api.test.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

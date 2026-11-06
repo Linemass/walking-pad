@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Walking Pad</title>
+<meta name="description" content="Daily walking goals, streaks, live sessions and a walking community, from the UREVO pad.">
+<link rel="icon" href="/static/icon.png">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  #root{min-height:100dvh}
+  .boot{min-height:100dvh;display:grid;place-content:center;justify-items:center;gap:14px;text-align:center;padding:24px}
+  .boot svg{width:120px;height:120px;animation:bob 1.4s ease-in-out infinite}
+  @keyframes bob{50%{transform:translateY(-8px)}}
+  .overlay{position:fixed;inset:0;z-index:20;animation:fadein .25s ease both}
+  .overlay .app{min-height:100dvh}
+  @keyframes fadein{from{opacity:0}}
+  .toastwrap{position:fixed;left:0;right:0;bottom:84px;z-index:30;pointer-events:none}
+  .toastwrap .toast{top:auto!important;bottom:0}
+  [data-go]{cursor:pointer}
+</style>
+</head>
+<body>
+<div id="root"><div class="boot"><span id="bootMascot"></span><b>Opening Walking Pad…</b></div></div>
+<div id="overlay"></div>
+<div class="toastwrap" id="toast"></div>
+<script src="/static/landmarks.js"></script>
+<script src="/static/ui.js"></script>
+<script>
+"use strict";
+const U = window.WalkUI;
+document.getElementById("bootMascot").innerHTML = U.mascot("happy");
+
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const ui = { route: store.get("wp.route", "today"), barMode: "week", barMetric: null, pick: null, pickMetric: "steps",
+             overlay: null, overlayUntil: 0, toast: null, toastUntil: 0, stoppedAt: null, lastHtml: "", failing: 0,
+             customPick: null, cq: store.get("wp.cq", { scope: "global", metric: "steps", period: "week" }),
+             cdata: null, cform: {}, cerror: null };
+let S = null;
+
+const device = () => innerWidth < 760 ? "phone" : "desktop";
+const getJ = async p => { const r = await fetch(p, { cache: "no-store" }); const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`); return j; };
+const postJ = async (p, body) => { const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`); return j; };
+/* ---------- one API for both modes ----------
+   PC (127.0.0.1): talks to the local logger.  Phone (hosted on Cloudflare): reads the state your PC pushes
+   and queues changes for it; the PC applies them within a few seconds. */
+const REMOTE = !["127.0.0.1", "localhost"].includes(location.hostname);
+const DEV = { get: () => store.get("wp.device", null), set: v => store.set("wp.device", v), clear: () => { try { localStorage.removeItem("wp.device"); } catch {} } };
+async function cloud(method, p, body) {
+  const d = DEV.get(); if (!d) throw new Error("This phone isn't linked yet.");
+  const r = await fetch(p, { method, headers: { "Content-Type": "application/json", Authorization: "Bearer " + d.token }, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { DEV.clear(); S = null; render(true); throw new Error("This phone was unlinked. Link it again with a new code."); }
+  if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`);
+  return j;
+}
+const ymd = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+function ago(iso) { const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000); return s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; }
+const queued = (msg) => toast("check", msg || "Sent to your PC. It updates in a few seconds.");
+const API = {
+  async state() {
+    if (!REMOTE) return getJ("/api/state");
+    const r = await cloud("GET", "/v1/app/state");
+    if (!r.state) return null;
+    const st = r.state, age = (Date.now() - Date.parse(r.updated_at)) / 1000;
+    st.remote = { base: location.origin, token: DEV.get().token, updated: r.updated_at, ago: ago(r.updated_at), stale: age > (st.moving || (st.pad && st.pad.paused) ? 30 : 150) };
+    if (st.remote.stale) { st.moving = false; if (st.pad) { st.pad.paused = false; st.pad.connected = false; } }
+    return st;
+  },
+  async settings(patch) {
+    if (!REMOTE) { S = await postJ("/api/settings", patch); return; }
+    await cloud("POST", "/v1/app/commands", { kind: "settings", payload: patch });
+    S = { ...S, settings: { ...S.settings, ...patch } }; queued();
+  },
+  async track(body) { if (!REMOTE) { S = await postJ("/api/track", body); return; } await cloud("POST", "/v1/app/commands", { kind: "track", payload: body }); queued(); },
+  async pad(action, speed) {
+    if (!REMOTE) { S = await postJ("/api/pad", { action, speed }); return; }
+    await cloud("POST", "/v1/app/commands", { kind: "pad", payload: { action, speed } }); queued(action === "speed" ? `Speed ${(+speed).toFixed(1)} km/h sent to your PC` : undefined);
+  },
+  me: () => REMOTE ? cloud("GET", "/v1/me") : getJ("/api/community/me"),
+  board(q) {
+    if (!REMOTE) return getJ(`/api/community/leaderboard?scope=${encodeURIComponent(q.scope)}&metric=${q.metric}&period=${q.period}`);
+    const now = new Date(), from = q.period === "month" ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+    return cloud("GET", `/v1/leaderboard?scope=${encodeURIComponent(q.scope)}&metric=${q.metric}&from=${ymd(from)}&to=${ymd(now)}&limit=50`);
+  },
+  async cpost(what, body) {
+    if (!REMOTE) return postJ("/api/community/" + what, body);
+    if (what === "groups") return cloud("POST", "/v1/groups", body);
+    if (what === "joingroup") return cloud("POST", "/v1/groups/join", body);
+    if (what === "leavegroup") return cloud("POST", `/v1/groups/${encodeURIComponent(body.group_id)}/leave`, {});
+    if (what === "public") return cloud("PATCH", "/v1/me", body);
+    if (what === "sync") return {};
+    throw new Error("Do this from Walking Pad on your PC.");
+  },
+};
+async function saveSettings(patch) { await API.settings(patch); render(true); }
+
+/* ---------- celebrations & toasts (each fires once per day) ---------- */
+const fired = () => store.get("wp.fired." + S.now.slice(0, 10), []);
+function fireOnce(key, fn) { const f = fired(); if (f.includes(key)) return; f.push(key); store.set("wp.fired." + S.now.slice(0, 10), f); fn(); }
+const queue = [];
+function toast(icon, text) {
+  if (ui.toast && ui.toast.text === text && Date.now() < ui.toastUntil) { ui.toastUntil = Date.now() + 3800; return; }
+  if (queue.some(q => q.text === text)) return;
+  queue.push({ icon, text }); pump();
+}
+function pump() { if (Date.now() < ui.toastUntil || !queue.length) return; ui.toast = queue.shift(); ui.toastUntil = Date.now() + 3800; }
+function chime() {
+  try { const a = new AudioContext(); [523, 659, 784].forEach((f, i) => { const o = a.createOscillator(), g = a.createGain();
+    o.frequency.value = f; o.type = "sine"; g.gain.setValueAtTime(.0001, a.currentTime + i * .12);
+    g.gain.exponentialRampToValueAtTime(.12, a.currentTime + i * .12 + .02); g.gain.exponentialRampToValueAtTime(.0001, a.currentTime + i * .12 + .5);
+    o.connect(g).connect(a.destination); o.start(a.currentTime + i * .12); o.stop(a.currentTime + i * .12 + .55); }); } catch {}
+}
+const MILESTONES = [3, 7, 14, 30, 60, 100, 180, 365];
+function checkMoments(prev, cur) {
+  if (!prev || !cur.onboarded || prev.goal.metric !== cur.goal.metric) return;
+  const g = cur.goal, a = prev.today.value, b = cur.today.value, m = g.metric;
+  const crossed = v => a < v && b >= v;
+  if (crossed(g.tiny)) fireOnce("tiny", () => toast("flame", `Tiny goal done. Streak is ${cur.streak.days}!`));
+  [[.25, "25% of today's goal"], [.5, "Halfway to today's goal"], [.75, "75% of today's goal"]].forEach(([f, l]) => {
+    if (crossed(g.goal * f) && g.goal * f > g.tiny) fireOnce("p" + f, () => toast("bolt", l)); });
+  const ka = Math.floor(prev.today.distance_m / 1000), kb = Math.floor(cur.today.distance_m / 1000);
+  if (kb > ka && kb > 0) fireOnce("km" + kb, () => toast("route", `${kb} km today`));
+  const sa = Math.floor(prev.today.steps / 1000), sb = Math.floor(cur.today.steps / 1000);
+  if (m !== "steps" && sb > sa && sb > 0) fireOnce("k" + sb, () => toast("steps", `${sb},000 steps today`));
+  if (crossed(g.goal)) fireOnce("goal", () => { const ms = MILESTONES.includes(cur.streak.days) && cur.streak.days > prev.streak.days;
+    showOverlay(ms ? "milestone" : "goal"); chime(); });
+  else if (cur.streak.days > prev.streak.days && MILESTONES.includes(cur.streak.days))
+    fireOnce("ms" + cur.streak.days, () => { showOverlay("milestone"); chime(); });
+  if (crossed(g.stretch)) fireOnce("stretch", () => toast("crown", "Stretch level reached. Everything now is bonus."));
+  (cur.goals || []).forEach(x => { const p = (prev.goals || []).find(y => y.id === x.id);
+    if (!x.primary && p && !p.done && x.done) fireOnce("g" + x.id, () => toast("check", `Goal done: ${x.title}`)); });
+  if (prev.journey && cur.journey && prev.journey.track.id === cur.journey.track.id) {
+    cur.journey.track.stops.forEach(st => { if (prev.journey.done < st.km && cur.journey.done >= st.km && st.km > 0)
+      fireOnce("stop" + cur.journey.track.id + st.key, () => toast("route", `You reached ${st.name}`)); });
+  }
+}
+function showOverlay(kind) { ui.overlay = kind; ui.overlayUntil = Date.now() + (kind === "milestone" ? 6000 : 3200); }
+
+/* ---------- routing ---------- */
+function screenFor() {
+  if (!S.onboarded) return "onboard";
+  if (ui.countdownN) return "countdown";
+  if (S.moving || (S.pad && S.pad.paused)) return "live";
+  return ui.route;
+}
+/* ---------- pad control (start needs a countdown so you can step on first) ---------- */
+async function padCmd(action, speed) { await API.pad(action, speed); render(true); }
+function startCountdown() {
+  ui.countdownN = 3; render(true);
+  ui.cdTimer = setInterval(async () => {
+    ui.countdownN -= 1;
+    if (ui.countdownN <= 0) {
+      clearInterval(ui.cdTimer); ui.countdownN = 0;
+      try { await padCmd("start"); toast("play", "Belt started"); } catch (e) { toast("bolt", e.message); render(true); }
+    } else render(true);
+  }, 1000);
+}
+function cancelCountdown() { clearInterval(ui.cdTimer); ui.countdownN = 0; render(true); }
+function render(force) {
+  if (REMOTE && !DEV.get()) {
+    const html = U.S.pair({ pform: ui.pform || {}, perror: ui.perror }, device());
+    if (html !== ui.lastHtml && (force || !(document.activeElement && document.activeElement.matches("input")))) { document.getElementById("root").innerHTML = html; ui.lastHtml = html; }
+    return;
+  }
+  if (!S) return;
+  const d = device(), now = Date.now();
+  const focused = document.activeElement && document.activeElement.matches("input");
+  const st = { ...S, barMode: ui.barMode, barMetric: ui.barMetric, pick: ui.pick, pickMetric: ui.pickMetric, customPick: ui.customPick,
+               cq: ui.cq, cdata: ui.cdata, cform: ui.cform, cerror: ui.cerror, countdownN: ui.countdownN, pairInfo: ui.pairInfo, devices: ui.devices,
+               toast: (S.moving && now < ui.toastUntil) ? ui.toast : null };
+  const html = U.S[screenFor()](st, d);
+  if (html !== ui.lastHtml && (force || !focused)) {              // don't wipe what you're typing
+    const el = document.activeElement, id = el && el.id, pos = el && el.selectionStart;
+    document.getElementById("root").innerHTML = html; ui.lastHtml = html;
+    if (force && id) { const n = document.getElementById(id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch {} } }
+  }
+  const ov = document.getElementById("overlay");
+  if (ui.overlay && now < ui.overlayUntil) {
+    const cs = { ...st, celebration: ui.overlay === "milestone" ? "milestone" : null };
+    if (ov.dataset.k !== ui.overlay) { ov.innerHTML = `<div class="overlay">${U.S.celebrate(cs, d)}</div>`; ov.dataset.k = ui.overlay; }
+  } else if (ov.innerHTML) { ov.innerHTML = ""; ov.dataset.k = ""; ui.overlay = null; }
+  const tw = document.getElementById("toast");
+  const tt = !S.moving && now < ui.toastUntil && ui.toast ? `<div class="toast" style="top:0">${U.I[ui.toast.icon]}${U.esc(ui.toast.text)}</div>` : "";
+  if (tw.innerHTML !== tt) tw.innerHTML = tt;
+}
+function go(route) {
+  ui.route = route; store.set("wp.route", route === "summary" || route === "map" ? "today" : route);
+  ui.cerror = null; render(true); scrollTo(0, 0);
+  if (route === "community") loadCommunity();
+  if (route === "goals") loadDevices();
+}
+async function loadDevices() {
+  if (REMOTE || !S || !S.community.enabled) return;
+  try { ui.devices = (await getJ("/api/cloud/devices")).devices; render(true); } catch {}
+}
+
+/* ---------- community ---------- */
+async function loadCommunity() {
+  if (!S || !S.community.enabled) { ui.cdata = null; render(true); return; }
+  ui.cdata = { ...(ui.cdata || {}), loading: true }; render(true);
+  try {
+    const q = ui.cq;
+    const [me, board] = await Promise.all([API.me(), API.board(q)]);
+    if (q.scope !== "global" && !me.groups.some(g => "group:" + g.group_id === q.scope)) { ui.cq = { ...q, scope: "global" }; return loadCommunity(); }
+    ui.cdata = { me, board, loading: false }; ui.cerror = null;
+  } catch (e) { ui.cdata = { ...(ui.cdata || {}), loading: false }; ui.cerror = e.message; }
+  render(true);
+}
+
+/* ---------- goals editing ---------- */
+const GOAL_DEFAULTS = { steps: { day: [2500, 500, 4000], week: [15000] }, minutes: { day: [30, 5, 45], week: [180] }, km: { day: [2, .3, 3], week: [12] } };
+const goalsCopy = () => JSON.parse(JSON.stringify(S.settings.goals));
+function withDefaults(g) {
+  const d = GOAL_DEFAULTS[g.metric][g.period];
+  g.target = d[0]; if (g.period === "day") { g.tiny = d[1]; g.stretch = d[2]; } else { delete g.tiny; delete g.stretch; }
+  return g;
+}
+async function editGoals(fn) { const gs = goalsCopy(); fn(gs); await saveSettings({ goals: gs }); }
+
+/* ---------- polling ---------- */
+async function tick() {
+  try {
+    if (REMOTE && !DEV.get()) { S = null; ui.failing = 0; render(true); setTimeout(tick, 2500); return; }
+    const cur = await API.state();
+    ui.failing = 0;
+    if (cur === null) { S = null; document.getElementById("root").innerHTML = U.S.waiting({}, device()); ui.lastHtml = ""; setTimeout(tick, 4000); return; }
+    if (S) checkMoments(S, cur);
+    if (S && S.moving && !cur.moving) ui.stoppedAt = Date.now();
+    if (cur.moving) ui.stoppedAt = null;
+    if (ui.stoppedAt && Date.now() - ui.stoppedAt > 20000) {
+      ui.stoppedAt = null;
+      if (cur.lastWalk && cur.lastWalk.min >= 1) go("summary");
+    }
+    const first = !S; S = cur; render();
+    if (first && ui.route === "community") loadCommunity();
+  } catch (e) {
+    if (++ui.failing >= 2) {
+      document.getElementById("root").innerHTML = `<div class="boot">${U.mascot("sleepy").replace('class="mascot"', 'style="width:120px;height:120px"')}
+        <b style="font-size:22px">The logger isn't running</b><span class="sub" style="max-width:40ch">Close this window and open Walking Pad again from the desktop icon. It starts the logger by itself.</span></div>`;
+      ui.lastHtml = "";
+    }
+  }
+  setTimeout(tick, S && S.moving ? 1000 : 2500);
+}
+
+/* ---------- interactions ---------- */
+function setPath(obj, path, val) { const [a, b] = path.split("."); return b ? { [a]: { ...(obj[a] || {}), [b]: val } } : { [a]: val }; }
+async function act(a) {
+  const k = a.dataset.act, v = a.dataset.v, id = a.dataset.id;
+  switch (k) {
+    case "set": a.disabled = true; return saveSettings({ [a.dataset.k]: Number(v) });
+    case "toggle": { const [p, sub] = a.dataset.k.split("."); return saveSettings(setPath(S.settings, a.dataset.k, !S.settings[p][sub])); }
+    case "bars": ui.barMode = v; return render(true);
+    case "barmetric": ui.barMetric = v === "min" ? "minutes" : v; return render(true);
+    case "pick": ui.pick = Number(v); return render(true);
+    case "pickmetric": ui.pickMetric = v; ui.pick = null; return render(true);
+    case "onboard": { const m = a.dataset.metric, t = Number(v), d = GOAL_DEFAULTS[m].day;
+      await saveSettings({ onboarded: true, goals: [{ metric: m, period: "day", target: t, tiny: d[1], stretch: Math.round(t * 1.6), primary: true }] });
+      return go("today"); }
+    case "dismiss": ui.overlayUntil = 0; return render(true);
+    case "padstart": return startCountdown();
+    case "pair": ui.pairInfo = await postJ("/api/cloud/pair"); render(true); setTimeout(() => { ui.pairInfo = null; loadDevices(); render(true); }, 600000); return;
+    case "revoke": if (!confirm("Unlink this device?")) return; await postJ("/api/cloud/revoke", { id: v }); return loadDevices();
+    case "unlink": if (!confirm("Unlink this phone? You'll need a new code from your PC.")) return; DEV.clear(); S = null; ui.lastHtml = ""; return render(true);
+    case "claim": {
+      ui.perror = null;
+      const r = await fetch("/v1/pair/claim", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: (ui.pform && ui.pform.code) || "", label: (ui.pform && ui.pform.label) || "iPhone" }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { ui.perror = j.error || "That code didn't work."; return render(true); }
+      DEV.set({ token: j.token, handle: j.handle }); ui.pform = {}; ui.lastHtml = ""; toast("check", `Linked to @${j.handle}'s PC`); return; }
+    case "padcancel": return cancelCountdown();
+    case "padpause": await padCmd("pause"); return toast("clock", "Paused");
+    case "padresume": await padCmd("start"); return toast("play", "Resumed");
+    case "padstop": if (!confirm("Stop the belt and end this walk?")) return; await padCmd("stop"); return toast("check", "Walk ended");
+    case "padspeed": return padCmd("speed", Number(v));
+    // goals
+    case "gadd": return editGoals(gs => gs.push(withDefaults({ metric: "steps", period: "week", primary: false })));
+    case "gdel": return editGoals(gs => gs.splice(gs.findIndex(g => g.id === id), 1));
+    case "gprimary": return editGoals(gs => gs.forEach(g => g.primary = g.id === id));
+    case "gmetric": return editGoals(gs => { const g = gs.find(g => g.id === id); if (g.metric !== v) { g.metric = v; withDefaults(g); } });
+    case "gperiod": return editGoals(gs => { const g = gs.find(g => g.id === id); if (g.period !== v) { g.period = v; if (v === "week") g.primary = false; withDefaults(g); } });
+    case "gsugg": return editGoals(gs => { gs.find(g => g.primary).target = Number(v); });
+    // tracks
+    case "map": return go("map");
+    case "track": await API.track({ id: v }); if (!REMOTE) toast("route", "New track started"); return render(true);
+    case "custompick": { const p = ui.customPick || [...(S.journey.custom || [])]; const i = p.indexOf(v); i >= 0 ? p.splice(i, 1) : p.push(v); ui.customPick = p; return render(true); }
+    case "customclear": ui.customPick = []; return render(true);
+    case "customstart": await API.track({ id: "custom", custom: ui.customPick || S.journey.custom }); ui.customPick = null; if (!REMOTE) toast("route", "Your track started"); return render(true);
+    // community
+    case "cformpublic": ui.cform.public = !ui.cform.public; return render(true);
+    case "cjoin": ui.cerror = null; if (REMOTE) throw new Error("Create your account from Walking Pad on your PC."); await postJ("/api/community/join", ui.cform); S = await getJ("/api/state"); ui.cform = {}; toast("users", "Welcome to the community"); return loadCommunity();
+    case "lscope": case "lmetric": case "lperiod": ui.cq = { ...ui.cq, [k.slice(1)]: v }; store.set("wp.cq", ui.cq); return loadCommunity();
+    case "copy": try { await navigator.clipboard.writeText(v); toast("copy", `Copied ${v}`); } catch { toast("copy", v); } return;
+    case "csync": await API.cpost("sync"); S = await API.state() || S; toast("check", "Synced"); return loadCommunity();
+    case "gcreate": { const r = await API.cpost("groups", { name: ui.cform.group_name || "" }); ui.cform.group_name = ""; toast("users", `Group made. Invite code ${r.invite_code}`); return loadCommunity(); }
+    case "gjoin": { const r = await API.cpost("joingroup", { invite_code: ui.cform.invite_code || "" }); ui.cform.invite_code = ""; toast("users", `You joined ${r.name}`); return loadCommunity(); }
+    case "gleave": if (!confirm("Leave this group?")) return; await API.cpost("leavegroup", { group_id: v }); return loadCommunity();
+    case "cpublic": await API.cpost("public", { public: !S.community.public }); if (!REMOTE) S = await API.state(); else { S.community.public = !S.community.public; queued("Saved"); } return loadCommunity();
+    case "cleave": if (REMOTE) throw new Error("Leave the community from Walking Pad on your PC.");
+      if (!confirm("Leave the community? Your user ID and shared totals are deleted from the server.")) return;
+      await postJ("/api/community/leave"); S = await getJ("/api/state"); ui.cdata = null; toast("check", "You left the community"); return render(true);
+  }
+}
+document.addEventListener("click", async e => {
+  const g = e.target.closest("[data-go]"); if (g) { e.preventDefault(); return go(g.dataset.go); }
+  const a = e.target.closest("[data-act]"); if (!a || a.matches("input")) return;
+  try { await act(a); }
+  catch (err) {
+    if (REMOTE && !DEV.get()) { ui.perror = err.message; render(true); }
+    else if (ui.route === "community") { ui.cerror = err.message; render(true); }
+    else { toast("bolt", err.message || "Couldn't save that."); render(true); }
+  }
+});
+document.addEventListener("input", e => { const el = e.target; if (el.dataset.cin) ui.cform[el.dataset.cin] = el.value;
+  if (el.dataset.pin) { ui.pform = ui.pform || {}; ui.pform[el.dataset.pin] = el.value; } });
+document.addEventListener("change", async e => {
+  const el = e.target;
+  try {
+    if (el.dataset.act === "cue" && el.value.trim()) { await saveSettings({ cue: el.value.trim() }); toast("check", "Cue saved"); }
+    if (el.dataset.act === "nudgetime" && el.value) { await saveSettings({ nudge: { time: el.value } }); toast("bell", "Nudge time saved"); }
+    if (el.dataset.act === "gfield") {
+      const v = Number(el.value), g0 = S.settings.goals.find(g => g.id === el.dataset.id);
+      if (!(v > 0)) { toast("bolt", "Use a number above zero"); return render(true); }
+      if (!g0 || g0[el.dataset.f] === v) return;
+      await editGoals(gs => { gs.find(g => g.id === el.dataset.id)[el.dataset.f] = v; });
+      toast("check", "Goal saved");
+    }
+  } catch (err) { toast("bolt", err.message || "Couldn't save that."); render(true); }
+});
+document.addEventListener("keydown", async e => {
+  if (S && S.pad && S.pad.control && (S.moving || S.pad.paused) && !e.target.matches("input,textarea")) {
+    const R = S.pad.speedRange || { min: 1, max: 6, inc: .5 }, base = S.pad.targetSpeed || S.live.speed || R.min;
+    try {
+      if (e.key === "ArrowUp") { e.preventDefault(); return await padCmd("speed", Math.min(R.max, base + R.inc)); }
+      if (e.key === "ArrowDown") { e.preventDefault(); return await padCmd("speed", Math.max(R.min, base - R.inc)); }
+      if (e.key === " ") { e.preventDefault(); return S.pad.paused ? await padCmd("start") : await padCmd("pause"); }
+    } catch (err) { toast("bolt", err.message); }
+  }
+  if (e.key === "Enter" && e.target.matches("[data-go]")) go(e.target.dataset.go);
+  if (e.key === "Escape") { ui.overlayUntil = 0; render(true); }
+  if (e.key === "Enter" && e.target.matches("input[data-act]")) e.target.blur();
+  if (e.key === "Enter" && e.target.dataset.cin === "group_name") document.querySelector('[data-act="gcreate"]')?.click();
+  if (e.key === "Enter" && e.target.dataset.cin === "invite_code") document.querySelector('[data-act="gjoin"]')?.click();
+});
+addEventListener("resize", () => { ui.lastHtml = ""; render(true); });
+setInterval(() => { pump(); render(); }, 500);
+tick();
+</script>
+</body>
+</html>

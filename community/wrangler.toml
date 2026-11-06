@@ -1,0 +1,38 @@
+name = "walking-pad-community"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Comma-separated list of browser origins allowed by CORS, e.g. "https://walkingpad.pages.dev".
+# Empty = no browser origin is allowed (server-to-server calls are unaffected).
+ALLOWED_ORIGINS = ""
+# Abuse limits (strings; parsed as integers).
+RATE_LIMIT_PER_MIN = "120"
+REGISTER_LIMIT_PER_HOUR = "10"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "walking-pad-community"
+database_id = "LOCAL-ONLY-REPLACE-ON-DEPLOY"
+migrations_dir = "migrations"
+
+# The web app (built from ../web by tools/build_web.py) is served from the same Worker, so the phone
+# app and the API share one origin (no CORS needed). Requests that don't match a file reach the Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# ---------- staging (deploy first, always): npx wrangler deploy --env staging ----------
+[env.staging]
+name = "walking-pad-staging"
+
+[env.staging.vars]
+ALLOWED_ORIGINS = ""
+RATE_LIMIT_PER_MIN = "120"
+REGISTER_LIMIT_PER_HOUR = "10"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "walking-pad-staging"
+database_id = "aaa85124-dce7-44ba-8557-7fde34a11ae0"
+migrations_dir = "migrations"

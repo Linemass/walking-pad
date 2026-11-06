@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Landmarks preview</title>
+<style>
+  @font-face{font-family:"Nunito";src:url("fonts/Nunito-Variable.ttf") format("truetype");font-weight:200 1000}
+  body{margin:0;font-family:"Nunito",system-ui,sans-serif;color:#38393B;background:#fff}
+  h1{font-weight:900;font-size:22px;margin:16px}
+  h2{font-weight:800;font-size:16px;margin:0 0 10px}
+  .panel{padding:16px}
+  .dark{background:#16181B;color:#F1F2F3}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:12px}
+  .cell{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;font-size:11px;font-weight:700}
+  .row{display:flex;align-items:flex-end;gap:8px}
+  .i96{width:96px;height:96px}.i40{width:40px;height:40px}
+  .i96 svg,.i40 svg{width:100%;height:100%;display:block}
+  .key{opacity:.6;font-weight:600}
+  #map{max-width:1000px;margin:0 auto}
+  #map svg{width:100%;height:auto;display:block}
+</style>
+</head>
+<body>
+<h1>Walk across Saudi Arabia: landmark icons</h1>
+<div class="panel"><h2>Light</h2><div class="grid" id="light"></div></div>
+<div class="panel dark"><h2>Dark</h2><div class="grid" id="dark"></div></div>
+<div class="panel"><h2>Map</h2><div id="map"></div></div>
+<script src="landmarks.js"></script>
+<script>
+  var L = window.WalkLandmarks;
+  ["light", "dark"].forEach(function (id) {
+    var host = document.getElementById(id);
+    Object.keys(L.icons).forEach(function (k) {
+      var p = L.places[k];
+      var c = document.createElement("div"); c.className = "cell";
+      c.innerHTML = '<div class="row"><div class="i96">' + L.icons[k] + '</div><div class="i40">' + L.icons[k] + '</div></div>'
+        + '<div>' + (p ? p.name : k) + '</div><div class="key">' + k + (p ? " · " + p.city : "") + '</div>';
+      host.appendChild(c);
+    });
+  });
+  var m = L.map, s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + m.viewBox + '" role="img" aria-label="Map of Saudi Arabia with landmarks">'
+    + '<rect width="100%" height="100%" fill="#DBF1FD"/>'
+    + '<path d="' + m.neighbors + '" fill="#EEF0F2" stroke="#C9CDD2" stroke-width="1.5" stroke-linejoin="round"/>'
+    + '<path d="' + m.saudi + '" fill="#F2D2A9" stroke="#B97C45" stroke-width="3" stroke-linejoin="round"/>';
+  // Label layout: Riyadh-area places share one label column with leader lines; others get offsets.
+  var column = ["boulevard", "kingdom", "turaif", "wadi", "masmak", "murabba", "museum"];
+  var off = {edge:[-12,28,"end"], ushaiqer:[-12,-12,"end"], hegra:[14,-6], alula:[14,14],
+             jtower:[-14,-14,"end"], fountain:[-14,6,"end"], balad:[-14,26,"end"], taif:[14,12], dammam:[0,-16,"middle"]};
+  var dots = "", labels = "";
+  function label(x, y, txt, anchor) {
+    return '<text x="' + x + '" y="' + y + '" font-size="17" font-weight="800" fill="#38393B" text-anchor="' + anchor
+      + '" paint-order="stroke" stroke="#fff" stroke-width="4">' + txt + '</text>';
+  }
+  Object.keys(L.places).forEach(function (k) {
+    var p = L.places[k], xy = m.project(p.lat, p.lon), ci = column.indexOf(k);
+    dots += '<circle cx="' + xy[0] + '" cy="' + xy[1] + '" r="' + (ci >= 0 ? 5 : 7) + '" fill="#FF8A1F" stroke="#38393B" stroke-width="2.5"/>';
+    if (ci >= 0) {
+      var lx = 640, ly = 334 + ci * 22;
+      labels += '<path d="M' + xy[0] + ' ' + xy[1] + 'L' + (lx - 6) + ' ' + (ly - 5) + '" stroke="#38393B" stroke-opacity=".45" stroke-width="1.5" fill="none"/>'
+        + label(lx, ly, p.name, "start");
+    } else {
+      var o = off[k] || [14, 6];
+      labels += label(xy[0] + o[0], xy[1] + o[1], p.name, o[2] || "start");
+    }
+  });
+  s += labels + dots;
+  document.getElementById("map").innerHTML = s + '</svg>';
+</script>
+</body>
+</html>

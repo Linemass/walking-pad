@@ -1,0 +1,10 @@
+urevo.db*
+*.log
+.edge-app/
+__pycache__/
+sessions.csv
+community/node_modules/
+community/.wrangler/
+web/landmarks-src/*.geojson
+build/
+dist/

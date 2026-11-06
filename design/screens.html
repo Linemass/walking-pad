@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Walking Pad Screens</title>
+<link rel="stylesheet" href="../web/app.css">
+</head>
+<body>
+<div id="root"></div>
+<script src="../web/landmarks.js" onerror="this.remove()"></script>
+<script src="fixture.js"></script>
+<script src="../web/ui.js"></script>
+<script>
+/* Base state = the real engine output (design/make_fixture.py) on the morning of Sat 7 Nov 2026.
+   Scenarios adjust it; future states (shield, milestone) are labelled as what-ifs on the board. */
+const base = window.FIXTURE;
+const clone = o => JSON.parse(JSON.stringify(o));
+const walk = (s, steps, min) => { s.today = { ...s.today, value: steps, steps, min, distance_m: Math.round(steps * .6), kcal: Math.round(min * 2.8), sessions: 1 };
+  s.goals = s.goals.map(g => { const v = g.period === "day" ? (g.metric === "steps" ? steps : g.metric === "minutes" ? min : steps * .0006) : g.value + (g.metric === "steps" ? steps : g.metric === "minutes" ? min : steps * .0006);
+    return { ...g, value: v, pct: Math.min(100, Math.round(v / g.target * 100)), done: v >= g.target }; }); };
+const SCEN = {
+  onboard:   s => { s.onboarded = false; return ["onboard", s]; },
+  home:      s => ["today", s],
+  padoff:    s => { s.pad.connected = false; s.banner = "padoff"; return ["today", s]; },
+  tiny:      s => { walk(s, 520, 7); s.moving = true; s.live = { elapsed: 420, speed: 2.6, steps: 520, distance_m: 310, kcal: 19 }; s.streak.days = 3; s.streak.best = 3; s.toast = { icon: "flame", text: "Tiny walk done. Streak is 3!" }; s.etaText = "About 27 more minutes at this pace, done around 09:41"; return ["live", s]; },
+  live:      s => { walk(s, 1890, 26); s.moving = true; s.live = { elapsed: 1560, speed: 2.8, steps: 1890, distance_m: 1130, kcal: 73 }; s.streak.days = 3; s.streak.best = 3; s.toast = { icon: "bolt", text: "75% of today's goal" }; s.etaText = "About 8 more minutes at this pace, done around 09:42"; return ["live", s]; },
+  celebrate: s => { walk(s, 2510, 34); s.streak.days = 3; s.streak.best = 3; return ["celebrate", s]; },
+  milestone: s => { walk(s, 2600, 35); s.streak.days = 7; s.streak.best = 7; s.celebration = "milestone"; return ["celebrate", s]; },
+  summary:   s => { walk(s, 2620, 35); s.streak.days = 3; s.streak.best = 3; s.week[6].state = "goal";
+                    s.lastWalk = { ...s.lastWalk, when: "Sat 7 Nov, 09:42", min: 35, steps: 2620, distance_m: 1570, kcal: 98, avgSpeed: 2.7, topSpeed: 4.0 }; return ["summary", s]; },
+  progress:  s => ["progress", s],
+  awards:    s => ["awards", s],
+  map:       s => { s.customPick = ["balad", "taif"]; return ["map", s]; },
+  goals:     s => ["goals", s],
+  community: s => { s.cq = { scope: "group:g1", metric: "steps", period: "week" }; return ["community", s]; },
+  cjoin:     s => { s.community = { enabled: false }; return ["community", s]; },
+  comeback:  s => { s.streak.days = 0; s.dateLabel = "Tuesday · 10 November"; s.greeting = "Good to see you."; s.heroNote = "500 steps starts a new streak, and today's goal counts double.";
+                    s.banner = "comeback"; s.week = [["S","goal"],["M","miss"],["T","today"],["W","future"],["T","future"],["F","future"],["S","future"]].map(([d,state])=>({d,state}));
+                    s.weekNote = "New week, fresh start. Sunday already counts."; s.next = { label: 3, title: "3-day streak", hint: "3 walking days in a row" }; return ["today", s]; },
+  shield:    s => { s.streak = { days: 12, best: 12, shields: 1 }; s.dateLabel = "Friday · 20 November"; s.greeting = "Your streak is safe."; s.heroNote = "Yesterday was covered by a rest shield.";
+                    s.banner = "shield"; s.week = [["S","goal"],["M","goal"],["T","tiny"],["W","goal"],["T","shield"],["F","today"],["S","future"]].map(([d,state])=>({d,state}));
+                    s.weekNote = "3 goal days so far. Two more makes a full week."; s.next = { label: 14, title: "14-day streak", hint: "2 more days" }; return ["today", s]; },
+  bigsteps:  s => { walk(s, 12480, 118); return ["today", s]; },        // stress test: 5-digit numbers in the ring
+};
+const q = new URLSearchParams(location.search);
+if (q.get("theme")) document.documentElement.dataset.theme = q.get("theme");
+const [screen, state] = (SCEN[q.get("s") || "home"])(clone(base));
+document.getElementById("root").innerHTML = WalkUI.S[screen](state, q.get("d") || "desktop");
+</script>
+</body>
+</html>
