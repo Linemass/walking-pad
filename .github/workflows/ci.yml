@@ -41,7 +41,7 @@ jobs:
           set -o pipefail
           if ! npm test 2>&1 | tee test.log; then
             # public annotation with the end of the log (job logs need a GitHub login to read)
-            msg=$(grep -E "not ok|Error|error|assert|expected|actual|✖" test.log | tail -25 | awk '{printf "%s%%0A", $0}')
+            msg=$(awk '/^not ok/{f=1} f' test.log | head -45 | awk '{printf "%s%%0A", $0}')
             echo "::error title=Worker tests failed::${msg}"
             exit 1
           fi
