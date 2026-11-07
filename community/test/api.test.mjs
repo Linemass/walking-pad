@@ -30,15 +30,21 @@ function run(args, opts = {}) {
   return r.stdout;
 }
 
-async function startServer({ port, inspectorPort, name, vars }) {
-  const busy = await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false);
-  if (busy) throw new Error(`port ${port} is already in use (stop any running "npm run dev" first)`);
+// Create a fresh local D1 for one server. All of these run BEFORE any `wrangler dev` starts: a local
+// migration while another wrangler dev is booting fails with "internal error" (seen on GitHub runners).
+function prepareDb({ name, vars }) {
   const persist = path.join(ROOT, ".wrangler", `test-${name}`);
   fs.rmSync(persist, { recursive: true, force: true });
   fs.mkdirSync(persist, { recursive: true });
-  const envFile = path.join(persist, "test.env");
-  fs.writeFileSync(envFile, Object.entries(vars).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
+  fs.writeFileSync(path.join(persist, "test.env"), Object.entries(vars).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
   run(["wrangler", "d1", "migrations", "apply", "DB", "--local", "--persist-to", persist]);
+}
+
+async function startServer({ port, inspectorPort, name }) {
+  const busy = await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false);
+  if (busy) throw new Error(`port ${port} is already in use (stop any running "npm run dev" first)`);
+  const persist = path.join(ROOT, ".wrangler", `test-${name}`);
+  const envFile = path.join(persist, "test.env");
   const [cmd, argv] = npx(
     ["wrangler", "dev", "--local", "--port", String(port), "--inspector-port", String(inspectorPort),
       "--persist-to", persist, "--env-file", envFile, "--show-interactive-dev-session=false"]);
@@ -73,17 +79,14 @@ function killTree(child) {
 let BASE, LBASE;
 
 before(async () => {
-  [BASE, LBASE] = await Promise.all([
-    startServer({
-      port: 8787, inspectorPort: 9301, name: "main",
-      vars: { ALLOWED_ORIGINS: `${ORIGIN_OK},${ORIGIN_OK2}`, RATE_LIMIT_PER_MIN: "100000", REGISTER_LIMIT_PER_HOUR: "100000" },
-    }),
-    startServer({
-      port: 8788, inspectorPort: 9302, name: "limited",
-      vars: { ALLOWED_ORIGINS: "", RATE_LIMIT_PER_MIN: String(LIMITED.perMin), REGISTER_LIMIT_PER_HOUR: String(LIMITED.regPerHour) },
-    }),
-  ]);
-}, { timeout: 180_000 });
+  const MAIN = { port: 8787, inspectorPort: 9301, name: "main",
+    vars: { ALLOWED_ORIGINS: `${ORIGIN_OK},${ORIGIN_OK2}`, RATE_LIMIT_PER_MIN: "100000", REGISTER_LIMIT_PER_HOUR: "100000" } };
+  const LIM = { port: 8788, inspectorPort: 9302, name: "limited",
+    vars: { ALLOWED_ORIGINS: "", RATE_LIMIT_PER_MIN: String(LIMITED.perMin), REGISTER_LIMIT_PER_HOUR: String(LIMITED.regPerHour) } };
+  prepareDb(MAIN);           // databases first, one at a time...
+  prepareDb(LIM);
+  [BASE, LBASE] = await Promise.all([startServer(MAIN), startServer(LIM)]);   // ...then both servers
+}, { timeout: 240_000 });
 
 after(() => {
   for (const s of servers) killTree(s);
