@@ -49,7 +49,9 @@ async function startServer({ port, inspectorPort, name }) {
     ["wrangler", "dev", "--local", "--port", String(port), "--inspector-port", String(inspectorPort),
       "--persist-to", persist, "--env-file", envFile, "--show-interactive-dev-session=false"]);
   const child = spawn(cmd, argv,
-    { cwd: ROOT, env: { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false" }, stdio: ["ignore", "pipe", "pipe"] }
+    // detached on Linux/macOS: the server gets its own process group, so killTree can stop npx AND the
+    // wrangler/workerd processes under it (killing npx alone left them running and the CI job hanging)
+    { cwd: ROOT, env: { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false" }, stdio: ["ignore", "pipe", "pipe"], detached: !IS_WIN }
   );
   let log = "";
   child.stdout.on("data", (d) => (log += d));
@@ -72,7 +74,8 @@ function killTree(child) {
   if (child.exitCode !== null) return;
   try {
     if (IS_WIN) execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: "ignore" });
-    else child.kill("SIGTERM");
+    else { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }
+    child.stdout?.destroy(); child.stderr?.destroy();
   } catch {}
 }
 
