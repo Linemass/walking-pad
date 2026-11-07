@@ -35,6 +35,8 @@ jobs:
           node-version: "22"
       - name: Install (pinned wrangler)
         run: npm ci
+      - name: Build the web app into public/ (served by the Worker; not committed)
+        run: python3 tools/build_web.py
       - name: Worker API tests (local wrangler + D1)
         shell: bash
         run: |

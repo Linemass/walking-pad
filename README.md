@@ -66,7 +66,7 @@ Open http://127.0.0.1:8765. A different pad brand: set `WALKINGPAD_NAME_PREFIX` 
 |---|---|
 | Engine rules | `python -P design/test_engine.py` |
 | UI layout (overlap, overflow, ring text, light + dark, desktop + phone) | `python -P design/make_fixture.py && python -P design/overlap_check.py` (needs `pip install playwright && playwright install chromium`) |
-| Worker API | `cd community && npm test` |
+| Worker API | `cd community && python tools/build_web.py && npm test` |
 | Pad controls (stub pad) | `python -P design/test_controls.py <out-dir>` |
 | Phone link end to end (local Worker) | `python -P design/e2e_cloud.py <out-dir>` |
 
