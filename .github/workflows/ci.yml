@@ -8,8 +8,8 @@ jobs:
   engine-and-ui:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install
@@ -29,9 +29,20 @@ jobs:
       run:
         working-directory: community
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
+      - name: Install (pinned wrangler)
+        run: npm ci
       - name: Worker API tests (local wrangler + D1)
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm test 2>&1 | tee test.log; then
+            # public annotation with the end of the log (job logs need a GitHub login to read)
+            msg=$(grep -E "not ok|Error|error|assert|expected|actual|✖" test.log | tail -25 | sed ':a;N;$!ba;s/
+/%0A/g')
+            echo "::error title=Worker tests failed::${msg}"
+            exit 1
+          fi

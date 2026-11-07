@@ -9,5 +9,10 @@
     "migrate:local": "npx wrangler d1 migrations apply DB --local",
     "test": "node --test --test-concurrency=1 test/api.test.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "wrangler": "4.158.0"
+  }
 }
